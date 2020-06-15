@@ -96,11 +96,6 @@ func saveFile(t testing.TB, repo restic.Repository, filename string, filesystem 
 		t.Fatal(err)
 	}
 
-	err = repo.SaveIndex(ctx)
-	if err != nil {
-		t.Fatal(err)
-	}
-
 	if !startCallback {
 		t.Errorf("start callback did not happen")
 	}
@@ -418,13 +413,16 @@ type blobCountingRepo struct {
 	saved map[restic.BlobHandle]uint
 }
 
-func (repo *blobCountingRepo) SaveBlob(ctx context.Context, t restic.BlobType, buf []byte, id restic.ID) (restic.ID, error) {
-	id, err := repo.Repository.SaveBlob(ctx, t, buf, id)
+func (repo *blobCountingRepo) SaveBlob(ctx context.Context, t restic.BlobType, buf []byte, id restic.ID, storeDuplicate bool) (restic.ID, bool, error) {
+	id, exists, err := repo.Repository.SaveBlob(ctx, t, buf, id, false)
+	if exists {
+		return id, exists, err
+	}
 	h := restic.BlobHandle{ID: id, Type: t}
 	repo.m.Lock()
 	repo.saved[h]++
 	repo.m.Unlock()
-	return id, err
+	return id, exists, err
 }
 
 func (repo *blobCountingRepo) SaveTree(ctx context.Context, t *restic.Tree) (restic.ID, error) {
@@ -853,11 +851,6 @@ func TestArchiverSaveDir(t *testing.T) {
 				t.Fatal(err)
 			}
 
-			err = repo.SaveIndex(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-
 			want := test.want
 			if want == nil {
 				want = test.src
@@ -942,11 +935,6 @@ func TestArchiverSaveDirIncremental(t *testing.T) {
 		t.Logf("node subtree %v", node.Subtree)
 
 		err = repo.Flush(ctx)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		err = repo.SaveIndex(ctx)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -1081,11 +1069,6 @@ func TestArchiverSaveTree(t *testing.T) {
 			}
 
 			err = repo.Flush(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			err = repo.SaveIndex(ctx)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1841,13 +1824,13 @@ type failSaveRepo struct {
 	err       error
 }
 
-func (f *failSaveRepo) SaveBlob(ctx context.Context, t restic.BlobType, buf []byte, id restic.ID) (restic.ID, error) {
+func (f *failSaveRepo) SaveBlob(ctx context.Context, t restic.BlobType, buf []byte, id restic.ID, storeDuplicate bool) (restic.ID, bool, error) {
 	val := atomic.AddInt32(&f.cnt, 1)
 	if val >= f.failAfter {
-		return restic.ID{}, f.err
+		return restic.ID{}, false, f.err
 	}
 
-	return f.Repository.SaveBlob(ctx, t, buf, id)
+	return f.Repository.SaveBlob(ctx, t, buf, id, storeDuplicate)
 }
 
 func TestArchiverAbortEarlyOnError(t *testing.T) {
@@ -1856,7 +1839,7 @@ func TestArchiverAbortEarlyOnError(t *testing.T) {
 	var tests = []struct {
 		src       TestDir
 		wantOpen  map[string]uint
-		failAfter uint // error after so many files have been saved to the repo
+		failAfter uint // error after so many blobs have been saved to the repo
 		err       error
 	}{
 		{
@@ -1876,26 +1859,29 @@ func TestArchiverAbortEarlyOnError(t *testing.T) {
 		{
 			src: TestDir{
 				"dir": TestDir{
-					"file1": TestFile{Content: string(restictest.Random(3, 4*1024*1024))},
-					"file2": TestFile{Content: string(restictest.Random(3, 4*1024*1024))},
-					"file3": TestFile{Content: string(restictest.Random(3, 4*1024*1024))},
-					"file4": TestFile{Content: string(restictest.Random(3, 4*1024*1024))},
-					"file5": TestFile{Content: string(restictest.Random(3, 4*1024*1024))},
-					"file6": TestFile{Content: string(restictest.Random(3, 4*1024*1024))},
-					"file7": TestFile{Content: string(restictest.Random(3, 4*1024*1024))},
-					"file8": TestFile{Content: string(restictest.Random(3, 4*1024*1024))},
-					"file9": TestFile{Content: string(restictest.Random(3, 4*1024*1024))},
+					"file1": TestFile{Content: string(restictest.Random(1, 1024))},
+					"file2": TestFile{Content: string(restictest.Random(2, 1024))},
+					"file3": TestFile{Content: string(restictest.Random(3, 1024))},
+					"file4": TestFile{Content: string(restictest.Random(4, 1024))},
+					"file5": TestFile{Content: string(restictest.Random(5, 1024))},
+					"file6": TestFile{Content: string(restictest.Random(6, 1024))},
+					"file7": TestFile{Content: string(restictest.Random(7, 1024))},
+					"file8": TestFile{Content: string(restictest.Random(8, 1024))},
+					"file9": TestFile{Content: string(restictest.Random(9, 1024))},
 				},
 			},
 			wantOpen: map[string]uint{
 				filepath.FromSlash("dir/file1"): 1,
 				filepath.FromSlash("dir/file2"): 1,
 				filepath.FromSlash("dir/file3"): 1,
+				filepath.FromSlash("dir/file4"): 1,
 				filepath.FromSlash("dir/file7"): 0,
 				filepath.FromSlash("dir/file8"): 0,
 				filepath.FromSlash("dir/file9"): 0,
 			},
-			failAfter: 5,
+			// fails four to six files were opened as the FileReadConcurrency allows for
+			// two queued files
+			failAfter: 4,
 			err:       testErr,
 		},
 	}
@@ -1926,7 +1912,10 @@ func TestArchiverAbortEarlyOnError(t *testing.T) {
 				err:        test.err,
 			}
 
-			arch := New(testRepo, testFS, Options{})
+			// at most two files may be queued
+			arch := New(testRepo, testFS, Options{
+				FileReadConcurrency: 2,
+			})
 
 			_, _, err := arch.Snapshot(ctx, []string{"."}, SnapshotOptions{Time: time.Now()})
 			if errors.Cause(err) != test.err {
@@ -1985,19 +1974,22 @@ func chmod(t testing.TB, filename string, mode os.FileMode) {
 type StatFS struct {
 	fs.FS
 
-	OverrideLstat map[string]os.FileInfo
+	OverrideLstat    map[string]os.FileInfo
+	OnlyOverrideStat bool
 }
 
 func (fs *StatFS) Lstat(name string) (os.FileInfo, error) {
-	if fi, ok := fs.OverrideLstat[name]; ok {
-		return fi, nil
+	if !fs.OnlyOverrideStat {
+		if fi, ok := fs.OverrideLstat[fixpath(name)]; ok {
+			return fi, nil
+		}
 	}
 
 	return fs.FS.Lstat(name)
 }
 
 func (fs *StatFS) OpenFile(name string, flags int, perm os.FileMode) (fs.File, error) {
-	if fi, ok := fs.OverrideLstat[name]; ok {
+	if fi, ok := fs.OverrideLstat[fixpath(name)]; ok {
 		f, err := fs.FS.OpenFile(name, flags, perm)
 		if err != nil {
 			return nil, err
@@ -2062,7 +2054,11 @@ func TestMetadataChanged(t *testing.T) {
 	// set some values so we can then compare the nodes
 	want.Content = node2.Content
 	want.Path = ""
-	want.ExtendedAttributes = nil
+	if len(want.ExtendedAttributes) == 0 {
+		want.ExtendedAttributes = nil
+	}
+
+	want.AccessTime = want.ModTime
 
 	// make sure that metadata was recorded successfully
 	if !cmp.Equal(want, node2) {
@@ -2085,6 +2081,10 @@ func TestMetadataChanged(t *testing.T) {
 
 	// make another snapshot
 	snapshotID, node3 := snapshot(t, repo, fs, snapshotID, "testfile")
+	// Override username and group to empty string - in case underlying system has user with UID 51234
+	// See https://github.com/restic/restic/issues/2372
+	node3.User = ""
+	node3.Group = ""
 
 	// make sure that metadata was recorded successfully
 	if !cmp.Equal(want, node3) {
@@ -2095,4 +2095,52 @@ func TestMetadataChanged(t *testing.T) {
 	TestEnsureFileContent(context.Background(), t, repo, "testfile", node3, files["testfile"].(TestFile))
 
 	checker.TestCheckRepo(t, repo)
+}
+
+func TestRacyFileSwap(t *testing.T) {
+	files := TestDir{
+		"file": TestFile{
+			Content: "foo bar test file",
+		},
+	}
+
+	tempdir, repo, cleanup := prepareTempdirRepoSrc(t, files)
+	defer cleanup()
+
+	back := fs.TestChdir(t, tempdir)
+	defer back()
+
+	// get metadata of current folder
+	fi := lstat(t, ".")
+	tempfile := filepath.Join(tempdir, "file")
+
+	statfs := &StatFS{
+		FS: fs.Local{},
+		OverrideLstat: map[string]os.FileInfo{
+			tempfile: fi,
+		},
+		OnlyOverrideStat: true,
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var tmb tomb.Tomb
+
+	arch := New(repo, fs.Track{FS: statfs}, Options{})
+	arch.Error = func(item string, fi os.FileInfo, err error) error {
+		t.Logf("archiver error as expected for %v: %v", item, err)
+		return err
+	}
+	arch.runWorkers(tmb.Context(ctx), &tmb)
+
+	// fs.Track will panic if the file was not closed
+	_, excluded, err := arch.Save(ctx, "/", tempfile, nil)
+	if err == nil {
+		t.Errorf("Save() should have failed")
+	}
+
+	if excluded {
+		t.Errorf("Save() excluded the node, that's unexpected")
+	}
 }

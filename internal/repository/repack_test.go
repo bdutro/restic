@@ -2,7 +2,6 @@ package repository_test
 
 import (
 	"context"
-	"io"
 	"math/rand"
 	"testing"
 
@@ -13,17 +12,6 @@ import (
 
 func randomSize(min, max int) int {
 	return rand.Intn(max-min) + min
-}
-
-func random(t testing.TB, length int) []byte {
-	rd := restic.NewRandReader(rand.New(rand.NewSource(rand.Int63())))
-	buf := make([]byte, length)
-	_, err := io.ReadFull(rd, buf)
-	if err != nil {
-		t.Fatalf("unable to read %d random bytes: %v", length, err)
-	}
-
-	return buf
 }
 
 func createRandomBlobs(t testing.TB, repo restic.Repository, blobs int, pData float32) {
@@ -41,17 +29,17 @@ func createRandomBlobs(t testing.TB, repo restic.Repository, blobs int, pData fl
 			length = randomSize(1*1024, 20*1024) // 1KiB to 20KiB
 		}
 
-		buf := random(t, length)
-		id := restic.Hash(buf)
+		buf := make([]byte, length)
+		rand.Read(buf)
 
-		if repo.Index().Has(id, restic.DataBlob) {
-			t.Errorf("duplicate blob %v/%v ignored", id, restic.DataBlob)
-			continue
-		}
-
-		_, err := repo.SaveBlob(context.TODO(), tpe, buf, id)
+		id, exists, err := repo.SaveBlob(context.TODO(), tpe, buf, restic.ID{}, false)
 		if err != nil {
 			t.Fatalf("SaveFrom() error %v", err)
+		}
+
+		if exists {
+			t.Errorf("duplicate blob %v/%v ignored", id, restic.DataBlob)
+			continue
 		}
 
 		if rand.Float32() < 0.2 {

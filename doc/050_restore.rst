@@ -50,9 +50,9 @@ This will restore the file ``foo`` to ``/tmp/restore-work/work/foo``.
 
 You can use the command ``restic ls latest`` or ``restic find foo`` to find the
 path to the file within the snapshot. This path you can then pass to
-`--include` in verbatim to only restore the single file or directory.
+``--include`` in verbatim to only restore the single file or directory.
 
-There are case insensitive variants of of ``--exclude`` and ``--include`` called
+There are case insensitive variants of ``--exclude`` and ``--include`` called
 ``--iexclude`` and ``--iinclude``. These options will behave the same way but
 ignore the casing of paths.
 
@@ -131,6 +131,6 @@ output the contents in the tar format:
 
 .. code-block:: console
 
-    $ restic -r /srv/restic-repo dump /home/other/work latest > restore.tar
+    $ restic -r /srv/restic-repo dump latest /home/other/work > restore.tar
 
 
