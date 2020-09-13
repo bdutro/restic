@@ -44,6 +44,8 @@ var version = "0.9.6-dev (compiled manually)"
 // TimeFormat is the format used for all timestamps printed by restic.
 const TimeFormat = "2006-01-02 15:04:05"
 
+type backendWrapper func(r restic.Backend) (restic.Backend, error)
+
 // GlobalOptions hold all global options for restic.
 type GlobalOptions struct {
 	Repo            string
@@ -68,11 +70,13 @@ type GlobalOptions struct {
 	stdout   io.Writer
 	stderr   io.Writer
 
+	backendTestHook backendWrapper
+
 	// verbosity is set as follows:
 	//  0 means: don't print any messages except errors, this is used when --quiet is specified
 	//  1 is the default: print essential messages
 	//  2 means: print more messages, report minor things, this is used when --verbose is specified
-	//  3 means: print very detailed debug messages, this is used when --verbose 2 is specified
+	//  3 means: print very detailed debug messages, this is used when --verbose=2 is specified
 	verbosity uint
 
 	Options []string
@@ -101,7 +105,7 @@ func init() {
 	f.StringVarP(&globalOptions.KeyHint, "key-hint", "", os.Getenv("RESTIC_KEY_HINT"), "`key` ID of key to try decrypting first (default: $RESTIC_KEY_HINT)")
 	f.StringVarP(&globalOptions.PasswordCommand, "password-command", "", os.Getenv("RESTIC_PASSWORD_COMMAND"), "specify a shell `command` to obtain a password (default: $RESTIC_PASSWORD_COMMAND)")
 	f.BoolVarP(&globalOptions.Quiet, "quiet", "q", false, "do not output comprehensive progress report")
-	f.CountVarP(&globalOptions.Verbose, "verbose", "v", "be verbose (specify --verbose multiple times or level `n`)")
+	f.CountVarP(&globalOptions.Verbose, "verbose", "v", "be verbose (specify --verbose multiple times or level --verbose=`n`)")
 	f.BoolVar(&globalOptions.NoLock, "no-lock", false, "do not lock the repo, this allows some operations on read-only repos")
 	f.BoolVarP(&globalOptions.JSON, "json", "", false, "set output mode to JSON for commands that support it")
 	f.StringVar(&globalOptions.CacheDir, "cache-dir", "", "set the cache `directory`. (default: use system default cache directory)")
@@ -270,7 +274,7 @@ func Exitf(exitcode int, format string, args ...interface{}) {
 }
 
 // resolvePassword determines the password to be used for opening the repository.
-func resolvePassword(opts GlobalOptions) (string, error) {
+func resolvePassword(opts GlobalOptions, envStr string) (string, error) {
 	if opts.PasswordFile != "" && opts.PasswordCommand != "" {
 		return "", errors.Fatalf("Password file and command are mutually exclusive options")
 	}
@@ -295,7 +299,7 @@ func resolvePassword(opts GlobalOptions) (string, error) {
 		return strings.TrimSpace(string(s)), errors.Wrap(err, "Readfile")
 	}
 
-	if pwd := os.Getenv("RESTIC_PASSWORD"); pwd != "" {
+	if pwd := os.Getenv(envStr); pwd != "" {
 		return pwd, nil
 	}
 
@@ -394,6 +398,14 @@ func OpenRepository(opts GlobalOptions) (*repository.Repository, error) {
 	be = backend.NewRetryBackend(be, 10, func(msg string, err error, d time.Duration) {
 		Warnf("%v returned error, retrying after %v: %v\n", msg, d, err)
 	})
+
+	// wrap backend if a test specified a hook
+	if opts.backendTestHook != nil {
+		be, err = opts.backendTestHook(be)
+		if err != nil {
+			return nil, err
+		}
+	}
 
 	s := repository.New(be)
 

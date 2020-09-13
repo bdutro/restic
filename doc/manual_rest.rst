@@ -20,6 +20,7 @@ Usage help is available:
       cache         Operate on local cache directories
       cat           Print internal objects to stdout
       check         Check the repository for errors
+      copy          Copy snapshots from one repository to another
       diff          Show differences between two snapshots
       dump          Print a backed-up file to stdout
       find          Find a file, a directory or restic IDs
@@ -60,7 +61,7 @@ Usage help is available:
       -q, --quiet                      do not output comprehensive progress report
       -r, --repo repository            repository to backup to or restore from (default: $RESTIC_REPOSITORY)
           --tls-client-cert file       path to a file containing PEM encoded TLS client certificate and private key
-      -v, --verbose n                  be verbose (specify --verbose multiple times or level n)
+      -v, --verbose n                  be verbose (specify --verbose multiple times or level --verbose=n)
 
     Use "restic [command] --help" for more information about a command.
 
@@ -79,17 +80,16 @@ command:
     EXIT STATUS
     ===========
 
-    Exit status is 0 if the command was successful, and non-zero if there was any error.
-
-    Note that some issues such as unreadable or deleted files during backup
-    currently doesn't result in a non-zero error exit status.
+    Exit status is 0 if the command was successful.
+    Exit status is 1 if there was a fatal error (no snapshot created).
+    Exit status is 3 if some source data could not be read (incomplete snapshot created).
 
     Usage:
       restic backup [flags] FILE/DIR [FILE/DIR] ...
 
     Flags:
       -e, --exclude pattern                        exclude a pattern (can be specified multiple times)
-          --exclude-caches                         excludes cache directories that are marked with a CACHEDIR.TAG file. See http://bford.info/cachedir/spec.html for the Cache Directory Tagging Standard
+          --exclude-caches                         excludes cache directories that are marked with a CACHEDIR.TAG file. See https://bford.info/cachedir/ for the Cache Directory Tagging Standard
           --exclude-file file                      read exclude patterns from a file (can be specified multiple times)
           --exclude-if-present filename[:header]   takes filename[:header], exclude contents of directories containing filename (except filename itself) if header of that file is as provided (can be specified multiple times)
           --files-from file                        read the files to backup from file (can be combined with file args/can be specified multiple times)
@@ -97,6 +97,7 @@ command:
       -h, --help                                   help for backup
       -H, --host hostname                          set the hostname for the snapshot manually. To prevent an expensive rescan use the "parent" flag
           --iexclude pattern                       same as --exclude pattern but ignores the casing of filenames
+          --iexclude-file file                     same as --exclude-file but ignores casing of filenames in patterns
           --ignore-inode                           ignore inode number changes when checking for modified files
       -x, --one-file-system                        exclude other file systems
           --parent snapshot                        use this parent snapshot (default: last snapshot in the repo that has the same target files/directories)
@@ -122,7 +123,7 @@ command:
       -q, --quiet                      do not output comprehensive progress report
       -r, --repo repository            repository to backup to or restore from (default: $RESTIC_REPOSITORY)
           --tls-client-cert file       path to a file containing PEM encoded TLS client certificate and private key
-      -v, --verbose n                  be verbose (specify --verbose multiple times or level n)
+      -v, --verbose n                  be verbose (specify --verbose multiple times or level --verbose=n)
 
 Subcommand that support showing progress information such as ``backup``,
 ``check`` and ``prune`` will do so unless the quiet flag ``-q`` or
@@ -305,6 +306,10 @@ host by using the ``--host`` flag:
 There we see that it would take 482 GiB of disk space to restore the latest
 snapshot from "myserver".
 
+In case you have multiple backups running from the same host so can also use
+``--tag`` and ``--path`` to be more specific about which snapshots you
+are looking for.
+
 But how much space does that snapshot take on disk? In other words, how much
 has restic's deduplication helped? We can check:
 
@@ -361,6 +366,8 @@ lists all snapshots as JSON and uses ``jq`` to pretty-print the result:
       }
     ]
 
+.. _temporary_files:
+
 Temporary files
 ---------------
 
@@ -377,6 +384,8 @@ instead of the default, set the environment variable like this:
     $ restic -r /srv/restic-repo backup ~/work
 
 
+
+.. _caching:
 
 Caching
 -------

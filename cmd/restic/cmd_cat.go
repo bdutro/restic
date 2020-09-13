@@ -149,7 +149,7 @@ func runCat(gopts GlobalOptions, args []string) error {
 
 	switch tpe {
 	case "pack":
-		h := restic.Handle{Type: restic.DataFile, Name: id.String()}
+		h := restic.Handle{Type: restic.PackFile, Name: id.String()}
 		buf, err := backend.LoadAll(gopts.ctx, nil, repo.Backend(), h)
 		if err != nil {
 			return err
@@ -165,8 +165,7 @@ func runCat(gopts GlobalOptions, args []string) error {
 
 	case "blob":
 		for _, t := range []restic.BlobType{restic.DataBlob, restic.TreeBlob} {
-			_, found := repo.Index().Lookup(id, t)
-			if !found {
+			if !repo.Index().Has(id, t) {
 				continue
 			}
 

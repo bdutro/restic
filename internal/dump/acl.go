@@ -1,4 +1,4 @@
-package main
+package dump
 
 // Adapted from https://github.com/maxymania/go-system/blob/master/posix_acl/posix_acl.go
 
@@ -33,17 +33,6 @@ type acl struct {
 type aclElement struct {
 	aclSID
 	Perm uint16
-}
-
-func (a *aclSID) setUID(uid uint32) {
-	*a = aclSID(uid) | (aclUser << 32)
-}
-func (a *aclSID) setGID(gid uint32) {
-	*a = aclSID(gid) | (aclGroup << 32)
-}
-
-func (a *aclSID) setType(tp int) {
-	*a = aclSID(tp) << 32
 }
 
 func (a aclSID) getType() int {

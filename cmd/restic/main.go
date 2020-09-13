@@ -54,7 +54,7 @@ directories in an encrypted repository stored on different backends.
 		if c.Name() == "version" {
 			return nil
 		}
-		pwd, err := resolvePassword(globalOptions)
+		pwd, err := resolvePassword(globalOptions, "RESTIC_PASSWORD")
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "Resolving password failed: %v\n", err)
 			Exit(1)
@@ -88,6 +88,8 @@ func main() {
 	switch {
 	case restic.IsAlreadyLocked(errors.Cause(err)):
 		fmt.Fprintf(os.Stderr, "%v\nthe `unlock` command can be used to remove stale locks\n", err)
+	case err == ErrInvalidSourceData:
+		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
 	case errors.IsFatal(errors.Cause(err)):
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 	case err != nil:
@@ -103,9 +105,13 @@ func main() {
 	}
 
 	var exitCode int
-	if err != nil {
+	switch err {
+	case nil:
+		exitCode = 0
+	case ErrInvalidSourceData:
+		exitCode = 3
+	default:
 		exitCode = 1
 	}
-
 	Exit(exitCode)
 }

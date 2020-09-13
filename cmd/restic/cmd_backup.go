@@ -39,10 +39,9 @@ given as the arguments.
 EXIT STATUS
 ===========
 
-Exit status is 0 if the command was successful, and non-zero if there was any error.
-
-Note that some issues such as unreadable or deleted files during backup
-currently doesn't result in a non-zero error exit status.
+Exit status is 0 if the command was successful.
+Exit status is 1 if there was a fatal error (no snapshot created).
+Exit status is 3 if some source data could not be read (incomplete snapshot created).
 `,
 	PreRun: func(cmd *cobra.Command, args []string) {
 		if backupOptions.Host == "" {
@@ -79,25 +78,29 @@ currently doesn't result in a non-zero error exit status.
 
 // BackupOptions bundles all options for the backup command.
 type BackupOptions struct {
-	Parent              string
-	Force               bool
-	Excludes            []string
-	InsensitiveExcludes []string
-	ExcludeFiles        []string
-	ExcludeOtherFS      bool
-	ExcludeIfPresent    []string
-	ExcludeCaches       bool
-	Stdin               bool
-	StdinFilename       string
-	Tags                []string
-	Host                string
-	FilesFrom           []string
-	TimeStamp           string
-	WithAtime           bool
-	IgnoreInode         bool
+	Parent                  string
+	Force                   bool
+	Excludes                []string
+	InsensitiveExcludes     []string
+	ExcludeFiles            []string
+	InsensitiveExcludeFiles []string
+	ExcludeOtherFS          bool
+	ExcludeIfPresent        []string
+	ExcludeCaches           bool
+	Stdin                   bool
+	StdinFilename           string
+	Tags                    []string
+	Host                    string
+	FilesFrom               []string
+	TimeStamp               string
+	WithAtime               bool
+	IgnoreInode             bool
 }
 
 var backupOptions BackupOptions
+
+// ErrInvalidSourceData is used to report an incomplete backup
+var ErrInvalidSourceData = errors.New("failed to read all source data during backup")
 
 func init() {
 	cmdRoot.AddCommand(cmdBackup)
@@ -108,9 +111,10 @@ func init() {
 	f.StringArrayVarP(&backupOptions.Excludes, "exclude", "e", nil, "exclude a `pattern` (can be specified multiple times)")
 	f.StringArrayVar(&backupOptions.InsensitiveExcludes, "iexclude", nil, "same as --exclude `pattern` but ignores the casing of filenames")
 	f.StringArrayVar(&backupOptions.ExcludeFiles, "exclude-file", nil, "read exclude patterns from a `file` (can be specified multiple times)")
+	f.StringArrayVar(&backupOptions.InsensitiveExcludeFiles, "iexclude-file", nil, "same as --exclude-file but ignores casing of `file`names in patterns")
 	f.BoolVarP(&backupOptions.ExcludeOtherFS, "one-file-system", "x", false, "exclude other file systems")
 	f.StringArrayVar(&backupOptions.ExcludeIfPresent, "exclude-if-present", nil, "takes `filename[:header]`, exclude contents of directories containing filename (except filename itself) if header of that file is as provided (can be specified multiple times)")
-	f.BoolVar(&backupOptions.ExcludeCaches, "exclude-caches", false, `excludes cache directories that are marked with a CACHEDIR.TAG file. See http://bford.info/cachedir/spec.html for the Cache Directory Tagging Standard`)
+	f.BoolVar(&backupOptions.ExcludeCaches, "exclude-caches", false, `excludes cache directories that are marked with a CACHEDIR.TAG file. See https://bford.info/cachedir/ for the Cache Directory Tagging Standard`)
 	f.BoolVar(&backupOptions.Stdin, "stdin", false, "read backup from stdin")
 	f.StringVar(&backupOptions.StdinFilename, "stdin-filename", "stdin", "`filename` to use when reading from stdin")
 	f.StringArrayVar(&backupOptions.Tags, "tag", nil, "add a `tag` for the new snapshot (can be specified multiple times)")
@@ -235,6 +239,14 @@ func collectRejectByNameFuncs(opts BackupOptions, repo *repository.Repository, t
 			return nil, err
 		}
 		opts.Excludes = append(opts.Excludes, excludes...)
+	}
+
+	if len(opts.InsensitiveExcludeFiles) > 0 {
+		excludes, err := readExcludePatternsFromFiles(opts.InsensitiveExcludeFiles)
+		if err != nil {
+			return nil, err
+		}
+		opts.InsensitiveExcludes = append(opts.InsensitiveExcludes, excludes...)
 	}
 
 	if len(opts.InsensitiveExcludes) > 0 {
@@ -557,7 +569,11 @@ func runBackup(opts BackupOptions, gopts GlobalOptions, term *termstatus.Termina
 	arch.SelectByName = selectByNameFilter
 	arch.Select = selectFilter
 	arch.WithAtime = opts.WithAtime
-	arch.Error = p.Error
+	success := true
+	arch.Error = func(item string, fi os.FileInfo, err error) error {
+		success = false
+		return p.Error(item, fi, err)
+	}
 	arch.CompleteItem = p.CompleteItem
 	arch.StartFile = p.StartFile
 	arch.CompleteBlob = p.CompleteBlob
@@ -593,6 +609,9 @@ func runBackup(opts BackupOptions, gopts GlobalOptions, term *termstatus.Termina
 	p.Finish(id)
 	if !gopts.JSON {
 		p.P("snapshot %s saved\n", id.Str())
+	}
+	if !success {
+		return ErrInvalidSourceData
 	}
 
 	// Return error if any

@@ -83,7 +83,7 @@ You can even backup individual files in the same repository (not passing
     snapshot 249d0210 saved
 
 If you're interested in what restic does, pass ``--verbose`` twice (or
-``--verbose 2``) to display detailed information about each file and directory
+``--verbose=2``) to display detailed information about each file and directory
 restic encounters:
 
 .. code-block:: console
@@ -142,6 +142,7 @@ the exclude options are:
 -  ``--iexclude`` Same as ``--exclude`` but ignores the case of paths
 -  ``--exclude-caches`` Specified once to exclude folders containing a special file
 -  ``--exclude-file`` Specified one or more times to exclude items listed in a given file
+-  ``--iexclude-file`` Same as ``exclude-file`` but ignores cases like in ``--iexclude``
 -  ``--exclude-if-present foo`` Specified one or more times to exclude a folder's content if it contains a file called ``foo`` (optionally having a given header, no wildcards for the file name supported)
 
 Please see ``restic help backup`` for more specific information about each exclude option.
@@ -213,12 +214,28 @@ On most Unixy shells, you can either quote or use backslashes. For example:
 
 By specifying the option ``--one-file-system`` you can instruct restic
 to only backup files from the file systems the initially specified files
-or directories reside on. For example, calling restic like this won't
-backup ``/sys`` or ``/dev`` on a Linux system:
+or directories reside on. In other words, it will prevent restic from crossing
+filesystem boundaries when performing a backup.
+
+For example, if you backup ``/`` with this option and you have external
+media mounted under ``/media/usb`` then restic will not back up ``/media/usb``
+at all because this is a different filesystem than ``/``. Virtual filesystems
+such as ``/proc`` are also considered different and thereby excluded when
+using ``--one-file-system``:
 
 .. code-block:: console
 
     $ restic -r /srv/restic-repo backup --one-file-system /
+
+Please note that this does not prevent you from specifying multiple filesystems
+on the command line, e.g:
+
+.. code-block:: console
+
+    $ restic -r /srv/restic-repo backup --one-file-system / /media/usb
+
+will back up both the ``/`` and ``/media/usb`` filesystems, but will not
+include other filesystems like ``/sys`` and ``/proc``.
 
 .. note:: ``--one-file-system`` is currently unsupported on Windows, and will
     cause the backup to immediately fail with an error.
@@ -366,12 +383,11 @@ created as it would only be written at the very (successful) end of
 the backup operation.  Previous snapshots will still be there and will still
 work.
 
-
 Environment Variables
 *********************
 
 In addition to command-line options, restic supports passing various options in
-environment variables. The following list of environment variables:
+environment variables. The following lists these environment variables:
 
 .. code-block:: console
 
@@ -379,9 +395,13 @@ environment variables. The following list of environment variables:
     RESTIC_PASSWORD_FILE                Location of password file (replaces --password-file)
     RESTIC_PASSWORD                     The actual password for the repository
     RESTIC_PASSWORD_COMMAND             Command printing the password for the repository to stdout
+    RESTIC_KEY_HINT                     ID of key to try decrypting first, before other keys
+    RESTIC_CACHE_DIR                    Location of the cache directory
+    RESTIC_PROGRESS_FPS                 Frames per second by which the progress bar is updated
 
     AWS_ACCESS_KEY_ID                   Amazon S3 access key ID
     AWS_SECRET_ACCESS_KEY               Amazon S3 secret access key
+    AWS_DEFAULT_REGION                  Amazon S3 default region
 
     ST_AUTH                             Auth URL for keystone v1 authentication
     ST_USER                             Username for keystone v1 authentication
@@ -416,5 +436,33 @@ environment variables. The following list of environment variables:
 
     RCLONE_BWLIMIT                      rclone bandwidth limit
 
+In addition to restic-specific environment variables, the following system-wide environment variables
+are taken into account for various operations:
+
+ * ``$XDG_CACHE_HOME/restic``, ``$HOME/.cache/restic``: :ref:`caching`.
+ * ``$TMPDIR``: :ref:`temporary_files`.
+ * ``$PATH/fusermount``: Binary for ``restic mount``.
 
 
+Exit status codes
+*****************
+
+Restic returns one of the following exit status codes after the backup command is run:
+
+ * 0 when the backup was successful (snapshot with all source files created)
+ * 1 when there was a fatal error (no snapshot created)
+ * 3 when some source files could not be read (incomplete snapshot with remaining files created)
+
+Fatal errors occur for example when restic is unable to write to the backup destination, when
+there are network connectivity issues preventing successful communication, or when an invalid
+password or command line argument is provided. When restic returns this exit status code, one
+should not expect a snapshot to have been created.
+
+Source file read errors occur when restic fails to read one or more files or directories that
+it was asked to back up, e.g. due to permission problems. Restic displays the number of source
+file read errors that occurred while running the backup. If there are errors of this type,
+restic will still try to complete the backup run with all the other files, and create a
+snapshot that then contains all but the unreadable files.
+
+One can use these exit status codes in scripts and other automation tools, to make them aware of
+the outcome of the backup run. To manually inspect the exit code in e.g. Linux, run ``echo $?``.

@@ -14,7 +14,7 @@ import (
 )
 
 var cmdSnapshots = &cobra.Command{
-	Use:   "snapshots [snapshotID ...]",
+	Use:   "snapshots [flags] [snapshotID ...]",
 	Short: "List all snapshots",
 	Long: `
 The "snapshots" command lists all snapshots stored in the repository.
@@ -251,9 +251,8 @@ func PrintSnapshots(stdout io.Writer, list restic.Snapshots, reasons []restic.Ke
 // Prints nothing, if we did not group at all.
 func PrintSnapshotGroupHeader(stdout io.Writer, groupKeyJSON string) error {
 	var key restic.SnapshotGroupKey
-	var err error
 
-	err = json.Unmarshal([]byte(groupKeyJSON), &key)
+	err := json.Unmarshal([]byte(groupKeyJSON), &key)
 	if err != nil {
 		return err
 	}

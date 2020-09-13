@@ -1,9 +1,6 @@
 package main
 
 import (
-	"fmt"
-	"time"
-
 	"github.com/restic/restic/internal/debug"
 	"github.com/restic/restic/internal/errors"
 	"github.com/restic/restic/internal/index"
@@ -45,34 +42,6 @@ func shortenStatus(maxLength int, s string) string {
 	}
 
 	return s[:maxLength-3] + "..."
-}
-
-// newProgressMax returns a progress that counts blobs.
-func newProgressMax(show bool, max uint64, description string) *restic.Progress {
-	if !show {
-		return nil
-	}
-
-	p := restic.NewProgress()
-
-	p.OnUpdate = func(s restic.Stat, d time.Duration, ticker bool) {
-		status := fmt.Sprintf("[%s] %s  %d / %d %s",
-			formatDuration(d),
-			formatPercent(s.Blobs, max),
-			s.Blobs, max, description)
-
-		if w := stdoutTerminalWidth(); w > 0 {
-			status = shortenStatus(w, status)
-		}
-
-		PrintProgress("%s", status)
-	}
-
-	p.OnDone = func(s restic.Stat, d time.Duration, ticker bool) {
-		fmt.Printf("\n")
-	}
-
-	return p
 }
 
 func runPrune(gopts GlobalOptions) error {
@@ -128,7 +97,7 @@ func pruneRepository(gopts GlobalOptions, repo restic.Repository) error {
 	}
 
 	Verbosef("counting files in repo\n")
-	err = repo.List(ctx, restic.DataFile, func(restic.ID, int64) error {
+	err = repo.List(ctx, restic.PackFile, func(restic.ID, int64) error {
 		stats.packs++
 		return nil
 	})
@@ -186,34 +155,22 @@ func pruneRepository(gopts GlobalOptions, repo restic.Repository) error {
 
 	stats.snapshots = len(snapshots)
 
-	Verbosef("find data that is still in use for %d snapshots\n", stats.snapshots)
-
-	usedBlobs := restic.NewBlobSet()
-	seenBlobs := restic.NewBlobSet()
-
-	bar = newProgressMax(!gopts.Quiet, uint64(len(snapshots)), "snapshots")
-	bar.Start()
-	for _, sn := range snapshots {
-		debug.Log("process snapshot %v", sn.ID())
-
-		err = restic.FindUsedBlobs(ctx, repo, *sn.Tree, usedBlobs, seenBlobs)
-		if err != nil {
-			if repo.Backend().IsNotExist(err) {
-				return errors.Fatal("unable to load a tree from the repo: " + err.Error())
-			}
-
-			return err
-		}
-
-		debug.Log("processed snapshot %v", sn.ID())
-		bar.Report(restic.Stat{Blobs: 1})
+	usedBlobs, err := getUsedBlobs(gopts, repo, snapshots)
+	if err != nil {
+		return err
 	}
-	bar.Done()
 
-	if len(usedBlobs) > stats.blobs {
-		return errors.Fatalf("number of used blobs is larger than number of available blobs!\n" +
-			"Please report this error (along with the output of the 'prune' run) at\n" +
-			"https://github.com/restic/restic/issues/new")
+	var missingBlobs []restic.BlobHandle
+	for h := range usedBlobs {
+		if _, ok := blobCount[h]; !ok {
+			missingBlobs = append(missingBlobs, h)
+		}
+	}
+	if len(missingBlobs) > 0 {
+		return errors.Fatalf("%v not found in the new index\n"+
+			"Data blobs seem to be missing, aborting prune to prevent further data loss!\n"+
+			"Please report this error (along with the output of the 'prune' run) at\n"+
+			"https://github.com/restic/restic/issues/new/choose", missingBlobs)
 	}
 
 	Verbosef("found %d of %d data blobs still in use, removing %d blobs\n",
@@ -281,13 +238,11 @@ func pruneRepository(gopts GlobalOptions, repo restic.Repository) error {
 
 	var obsoletePacks restic.IDSet
 	if len(rewritePacks) != 0 {
-		bar = newProgressMax(!gopts.Quiet, uint64(len(rewritePacks)), "packs rewritten")
-		bar.Start()
+		bar := newProgressMax(!gopts.Quiet, uint64(len(rewritePacks)), "packs rewritten")
 		obsoletePacks, err = repository.Repack(ctx, repo, rewritePacks, usedBlobs, bar)
 		if err != nil {
 			return err
 		}
-		bar.Done()
 	}
 
 	removePacks.Merge(obsoletePacks)
@@ -297,19 +252,38 @@ func pruneRepository(gopts GlobalOptions, repo restic.Repository) error {
 	}
 
 	if len(removePacks) != 0 {
-		bar = newProgressMax(!gopts.Quiet, uint64(len(removePacks)), "packs deleted")
-		bar.Start()
-		for packID := range removePacks {
-			h := restic.Handle{Type: restic.DataFile, Name: packID.String()}
-			err = repo.Backend().Remove(ctx, h)
-			if err != nil {
-				Warnf("unable to remove file %v from the repository\n", packID.Str())
-			}
-			bar.Report(restic.Stat{Blobs: 1})
-		}
-		bar.Done()
+		Verbosef("remove %d old packs\n", len(removePacks))
+		DeleteFiles(gopts, repo, removePacks, restic.PackFile)
 	}
 
 	Verbosef("done\n")
 	return nil
+}
+
+func getUsedBlobs(gopts GlobalOptions, repo restic.Repository, snapshots []*restic.Snapshot) (usedBlobs restic.BlobSet, err error) {
+	ctx := gopts.ctx
+
+	Verbosef("find data that is still in use for %d snapshots\n", len(snapshots))
+
+	usedBlobs = restic.NewBlobSet()
+
+	bar := newProgressMax(!gopts.Quiet, uint64(len(snapshots)), "snapshots")
+	bar.Start()
+	defer bar.Done()
+	for _, sn := range snapshots {
+		debug.Log("process snapshot %v", sn.ID())
+
+		err = restic.FindUsedBlobs(ctx, repo, *sn.Tree, usedBlobs)
+		if err != nil {
+			if repo.Backend().IsNotExist(err) {
+				return nil, errors.Fatal("unable to load a tree from the repo: " + err.Error())
+			}
+
+			return nil, err
+		}
+
+		debug.Log("processed snapshot %v", sn.ID())
+		bar.Report(restic.Stat{Blobs: 1})
+	}
+	return usedBlobs, nil
 }

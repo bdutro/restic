@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/restic/restic/internal/crypto"
 	"github.com/restic/restic/internal/errors"
 
 	"github.com/restic/restic/internal/debug"
@@ -239,7 +238,7 @@ func (res *Restorer) RestoreTo(ctx context.Context, dst string) error {
 				idx.Add(node.Inode, node.DeviceID, location)
 			}
 
-			filerestorer.addFile(location, node.Content)
+			filerestorer.addFile(location, node.Content, int64(node.Size))
 
 			return nil
 		},
@@ -313,8 +312,7 @@ func (res *Restorer) VerifyFiles(ctx context.Context, dst string) (int, error) {
 
 			offset := int64(0)
 			for _, blobID := range node.Content {
-				blobs, _ := res.repo.Index().Lookup(blobID, restic.DataBlob)
-				length := blobs[0].Length - uint(crypto.Extension)
+				length, _ := res.repo.LookupBlobSize(blobID, restic.DataBlob)
 				buf := make([]byte, length) // TODO do I want to reuse the buffer somehow?
 				_, err = file.ReadAt(buf, offset)
 				if err != nil {
