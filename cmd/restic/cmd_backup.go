@@ -10,6 +10,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -90,12 +91,13 @@ type BackupOptions struct {
 	ExcludeLargerThan       string
 	Stdin                   bool
 	StdinFilename           string
-	Tags                    []string
+	Tags                    restic.TagList
 	Host                    string
 	FilesFrom               []string
 	TimeStamp               string
 	WithAtime               bool
 	IgnoreInode             bool
+	UseFsSnapshot           bool
 }
 
 var backupOptions BackupOptions
@@ -119,7 +121,7 @@ func init() {
 	f.StringVar(&backupOptions.ExcludeLargerThan, "exclude-larger-than", "", "max `size` of the files to be backed up (allowed suffixes: k/K, m/M, g/G, t/T)")
 	f.BoolVar(&backupOptions.Stdin, "stdin", false, "read backup from stdin")
 	f.StringVar(&backupOptions.StdinFilename, "stdin-filename", "stdin", "`filename` to use when reading from stdin")
-	f.StringArrayVar(&backupOptions.Tags, "tag", nil, "add a `tag` for the new snapshot (can be specified multiple times)")
+	f.Var(&backupOptions.Tags, "tag", "add `tags` for the new snapshot in the format `tag[,tag,...]` (can be specified multiple times)")
 
 	f.StringVarP(&backupOptions.Host, "host", "H", "", "set the `hostname` for the snapshot manually. To prevent an expensive rescan use the \"parent\" flag")
 	f.StringVar(&backupOptions.Host, "hostname", "", "set the `hostname` for the snapshot manually")
@@ -129,6 +131,9 @@ func init() {
 	f.StringVar(&backupOptions.TimeStamp, "time", "", "`time` of the backup (ex. '2012-11-01 22:08:41') (default: now)")
 	f.BoolVar(&backupOptions.WithAtime, "with-atime", false, "store the atime for all files and directories")
 	f.BoolVar(&backupOptions.IgnoreInode, "ignore-inode", false, "ignore inode number changes when checking for modified files")
+	if runtime.GOOS == "windows" {
+		f.BoolVar(&backupOptions.UseFsSnapshot, "use-fs-snapshot", false, "use filesystem snapshot where possible (currently only Windows VSS)")
+	}
 }
 
 // filterExisting returns a slice of all existing items, or an error if no
@@ -394,7 +399,7 @@ func collectTargets(opts BackupOptions, args []string) (targets []string, err er
 func findParentSnapshot(ctx context.Context, repo restic.Repository, opts BackupOptions, targets []string) (parentID *restic.ID, err error) {
 	// Force using a parent
 	if !opts.Force && opts.Parent != "" {
-		id, err := restic.FindSnapshot(repo, opts.Parent)
+		id, err := restic.FindSnapshot(ctx, repo, opts.Parent)
 		if err != nil {
 			return nil, errors.Fatalf("invalid id %q: %v", opts.Parent, err)
 		}
@@ -496,7 +501,7 @@ func runBackup(opts BackupOptions, gopts GlobalOptions, term *termstatus.Termina
 	if !gopts.JSON {
 		p.V("lock repository")
 	}
-	lock, err := lockRepo(repo)
+	lock, err := lockRepo(gopts.ctx, repo)
 	defer unlockRepo(lock)
 	if err != nil {
 		return err
@@ -527,8 +532,12 @@ func runBackup(opts BackupOptions, gopts GlobalOptions, term *termstatus.Termina
 		return err
 	}
 
-	if !gopts.JSON && parentSnapshotID != nil {
-		p.V("using parent snapshot %v\n", parentSnapshotID.Str())
+	if !gopts.JSON {
+		if parentSnapshotID != nil {
+			p.P("using parent snapshot %v\n", parentSnapshotID.Str())
+		} else {
+			p.P("no parent snapshot found, will read all files\n")
+		}
 	}
 
 	selectByNameFilter := func(item string) bool {
@@ -550,6 +559,25 @@ func runBackup(opts BackupOptions, gopts GlobalOptions, term *termstatus.Termina
 	}
 
 	var targetFS fs.FS = fs.Local{}
+	if runtime.GOOS == "windows" && opts.UseFsSnapshot {
+		if err = fs.HasSufficientPrivilegesForVSS(); err != nil {
+			return err
+		}
+
+		errorHandler := func(item string, err error) error {
+			return p.Error(item, nil, err)
+		}
+
+		messageHandler := func(msg string, args ...interface{}) {
+			if !gopts.JSON {
+				p.P(msg, args...)
+			}
+		}
+
+		localVss := fs.NewLocalVss(errorHandler, messageHandler)
+		defer localVss.DeleteSnapshots()
+		targetFS = localVss
+	}
 	if opts.Stdin {
 		if !gopts.JSON {
 			p.V("read data from stdin")

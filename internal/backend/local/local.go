@@ -27,9 +27,9 @@ var _ restic.Backend = &Local{}
 const defaultLayout = "default"
 
 // Open opens the local backend as specified by config.
-func Open(cfg Config) (*Local, error) {
+func Open(ctx context.Context, cfg Config) (*Local, error) {
 	debug.Log("open local backend at %v (layout %q)", cfg.Path, cfg.Layout)
-	l, err := backend.ParseLayout(&backend.LocalFilesystem{}, cfg.Layout, defaultLayout, cfg.Path)
+	l, err := backend.ParseLayout(ctx, &backend.LocalFilesystem{}, cfg.Layout, defaultLayout, cfg.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -39,10 +39,10 @@ func Open(cfg Config) (*Local, error) {
 
 // Create creates all the necessary files and directories for a new local
 // backend at dir. Afterwards a new config blob should be created.
-func Create(cfg Config) (*Local, error) {
+func Create(ctx context.Context, cfg Config) (*Local, error) {
 	debug.Log("create local backend at %v (layout %q)", cfg.Path, cfg.Layout)
 
-	l, err := backend.ParseLayout(&backend.LocalFilesystem{}, cfg.Layout, defaultLayout, cfg.Path)
+	l, err := backend.ParseLayout(ctx, &backend.LocalFilesystem{}, cfg.Layout, defaultLayout, cfg.Path)
 	if err != nil {
 		return nil, err
 	}
@@ -130,7 +130,15 @@ func (b *Local) Save(ctx context.Context, h restic.Handle, rd restic.RewindReade
 		return errors.Wrap(err, "Close")
 	}
 
-	return setNewFileMode(filename, backend.Modes.File)
+	// try to mark file as read-only to avoid accidential modifications
+	// ignore if the operation fails as some filesystems don't allow the chmod call
+	// e.g. exfat and network file systems with certain mount options
+	err = setFileReadonly(filename, backend.Modes.File)
+	if err != nil && !os.IsPermission(err) {
+		return errors.Wrap(err, "Chmod")
+	}
+
+	return nil
 }
 
 // Load runs fn with a reader that yields the contents of the file at h at the
@@ -205,7 +213,7 @@ func (b *Local) Remove(ctx context.Context, h restic.Handle) error {
 
 	// reset read-only flag
 	err := fs.Chmod(fn, 0666)
-	if err != nil {
+	if err != nil && !os.IsPermission(err) {
 		return errors.Wrap(err, "Chmod")
 	}
 

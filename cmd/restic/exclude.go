@@ -74,8 +74,9 @@ type RejectFunc func(path string, fi os.FileInfo) bool
 // rejectByPattern returns a RejectByNameFunc which rejects files that match
 // one of the patterns.
 func rejectByPattern(patterns []string) RejectByNameFunc {
+	parsedPatterns := filter.ParsePatterns(patterns)
 	return func(item string) bool {
-		matched, _, err := filter.List(patterns, item)
+		matched, err := filter.List(parsedPatterns, item)
 		if err != nil {
 			Warnf("error for exclude pattern: %v", err)
 		}
@@ -234,10 +235,6 @@ func rejectByDevice(samples []string) (RejectFunc, error) {
 	debug.Log("allowed devices: %v\n", allowed)
 
 	return func(item string, fi os.FileInfo) bool {
-		if fi == nil {
-			return false
-		}
-
 		item = filepath.Clean(item)
 
 		id, err := fs.DeviceID(fi)
@@ -317,6 +314,10 @@ func rejectBySize(maxSizeStr string) (RejectFunc, error) {
 }
 
 func parseSizeStr(sizeStr string) (int64, error) {
+	if sizeStr == "" {
+		return 0, errors.New("expected size, got empty string")
+	}
+
 	numStr := sizeStr[:len(sizeStr)-1]
 	var unit int64 = 1
 
@@ -336,7 +337,7 @@ func parseSizeStr(sizeStr string) (int64, error) {
 	}
 	value, err := strconv.ParseInt(numStr, 10, 64)
 	if err != nil {
-		return 0, nil
+		return 0, err
 	}
 	return value * unit, nil
 }

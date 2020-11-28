@@ -50,7 +50,24 @@ still get a nice live status display. Be aware that the live status shows the
 processed files and not the transferred data. Transferred volume might be lower
 (due to de-duplication) or higher.
 
-If you run the command again, restic will create another snapshot of
+On Windows, the ``--use-fs-snapshot`` option will use Windows' Volume Shadow Copy
+Service (VSS) when creating backups. Restic will transparently create a VSS
+snapshot for each volume that contains files to backup. Files are read from the
+VSS snapshot instead of the regular filesystem. This allows to backup files that are
+exclusively locked by another process during the backup.
+
+By default VSS ignores Outlook OST files. This is not a restriction of restic
+but the default Windows VSS configuration. The files not to snapshot are
+configured in the Windows registry under the following key:
+
+.. code-block:: console
+
+    HKEY_LOCAL_MACHINE\SYSTEM\CurrentControlSet\Control\BackupRestore\FilesNotToSnapshot
+
+For more details refer the official Windows documentation e.g. the article
+``Registry Keys and Values for Backup and Restore``.
+
+If you run the backup command again, restic will create another snapshot of
 your data, but this time it's even faster and no new data was added to the
 repository (since all data is already there). This is de-duplication at work!
 
@@ -260,7 +277,7 @@ Including Files
 ***************
 
 By using the ``--files-from`` option you can read the files you want to back
-up from one or more files. This is especially useful if a lot of files have
+up from one or more folders. This is especially useful if a lot of files have
 to be backed up that are not in the same folder or are maybe pre-filtered by
 other software.
 
@@ -407,6 +424,7 @@ environment variables. The following lists these environment variables:
 
 .. code-block:: console
 
+    RESTIC_REPOSITORY_FILE              Name of file containing the repository location (replaces --repository-file)
     RESTIC_REPOSITORY                   Location of repository (replaces -r)
     RESTIC_PASSWORD_FILE                Location of password file (replaces --password-file)
     RESTIC_PASSWORD                     The actual password for the repository
@@ -414,6 +432,8 @@ environment variables. The following lists these environment variables:
     RESTIC_KEY_HINT                     ID of key to try decrypting first, before other keys
     RESTIC_CACHE_DIR                    Location of the cache directory
     RESTIC_PROGRESS_FPS                 Frames per second by which the progress bar is updated
+
+    TMPDIR                              Location for temporary files
 
     AWS_ACCESS_KEY_ID                   Amazon S3 access key ID
     AWS_SECRET_ACCESS_KEY               Amazon S3 secret access key
@@ -452,12 +472,12 @@ environment variables. The following lists these environment variables:
 
     RCLONE_BWLIMIT                      rclone bandwidth limit
 
-In addition to restic-specific environment variables, the following system-wide environment variables
-are taken into account for various operations:
+See :ref:`caching` for the rules concerning cache locations when
+``RESTIC_CACHE_DIR`` is not set.
 
- * ``$XDG_CACHE_HOME/restic``, ``$HOME/.cache/restic``: :ref:`caching`.
- * ``$TMPDIR``: :ref:`temporary_files`.
- * ``$PATH/fusermount``: Binary for ``restic mount``.
+The external programs that restic may execute include ``rclone`` (for rclone
+backends) and ``ssh`` (for the SFTP backend). These may respond to further
+environment variables and configuration files; see their respective manuals.
 
 
 Exit status codes
